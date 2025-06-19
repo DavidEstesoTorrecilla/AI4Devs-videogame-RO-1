@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pac-Man Game</title>
+    <!-- Fuente retro para el juego -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <!-- D-Pad para controles táctiles -->
+        <div id="dpad-container">
+            <div id="dpad-up" class="dpad-button" aria-label="Move Up">▲</div>
+            <div id="dpad-left" class="dpad-button" aria-label="Move Left">◀</div>
+            <div id="dpad-right" class="dpad-button" aria-label="Move Right">▶</div>
+            <div id="dpad-down" class="dpad-button" aria-label="Move Down">▼</div>
+        </div>
+        <!-- Botón de reinicio para pantallas táctiles -->
+        <div id="restart-button" class="hidden" aria-label="Play Again">Jugar de nuevo</div>
+    </div><script src="js/Map.js" defer></script>
+    <script src="js/Player.js" defer></script>
+    <script src="js/Ghost.js" defer></script>
+    <script src="js/game.js" defer></script>
+</body>
+</html>
