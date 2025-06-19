@@ -1,0 +1,702 @@
+/**
+ * Clase Ghost - Representa a los fantasmas enemigos de Pac-Man
+ * Implementación completamente reescrita con un sistema de movimiento por celdas simples
+ */
+class Ghost {
+    /**
+     * Constructor de la clase Ghost
+     * @param {number} x - Posición inicial X
+     * @param {number} y - Posición inicial Y
+     * @param {number} tileSize - Tamaño de cada baldosa
+     * @param {number} velocity - Velocidad de movimiento
+     * @param {Map} map - Referencia al mapa para navegación
+     * @param {string} color - Color o identificador del fantasma
+     * @param {object} scatterTarget - Esquina de dispersión para modo Scatter
+     * @param {Player} player - Referencia al jugador para modo Chase
+     */
+    constructor(x, y, tileSize, velocity, map, color = 'red', scatterTarget = null, player = null) {
+        // Propiedades básicas
+        this.tileSize = tileSize;
+        this.velocity = velocity;
+        this.map = map;
+        this.color = color;
+        
+        // Posición y movimiento
+        this.x = x; 
+        this.y = y;
+        this.initialX = x; // Posición inicial para respawn
+        this.initialY = y;
+        
+        // Dirección y objetivos
+        this.direction = null; // Sin dirección inicial
+        this.scatterTarget = scatterTarget || { x: 0, y: 0 };
+        this.player = player;
+        this.targetTile = { x: this.scatterTarget.x, y: this.scatterTarget.y };
+        
+        // Estado actual del fantasma
+        this.states = {
+            CHASE: 'chase',
+            SCATTER: 'scatter',
+            FRIGHTENED: 'frightened',
+            EATEN: 'eaten'
+        };
+        this.currentState = this.states.SCATTER;
+        this.previousState = this.states.SCATTER;
+        
+        // Temporizadores
+        this.frightenedTimer = 0;
+        this.frightenedDuration = 300; // 5 segundos a 60 FPS
+        
+        // Manejar túneles
+        this.inTunnel = false;
+        
+        console.log(`Fantasma ${this.color} inicializado en posición: (${Math.round(this.x/this.tileSize)}, ${Math.round(this.y/this.tileSize)})`);
+    }
+    
+    /**
+     * Método draw - Dibuja el fantasma en el canvas
+     * @param {CanvasRenderingContext2D} ctx - Contexto del canvas
+     */
+    draw(ctx) {
+        // Dibujar fantasma usando un sprite de respaldo simple
+        this._drawFallbackSprite(ctx);
+    }
+    
+    /**
+     * Método privado para dibujar un sprite de respaldo cuando las imágenes no están disponibles
+     * @param {CanvasRenderingContext2D} ctx - Contexto del canvas
+     */
+    _drawFallbackSprite(ctx) {
+        const centerX = this.x + this.tileSize / 2;
+        const centerY = this.y + this.tileSize / 2;
+        const radius = this.tileSize / 2.5;
+        
+        // Color del fantasma según su estado
+        let ghostColor;
+        if (this.currentState === this.states.FRIGHTENED) {
+            ghostColor = '#2121ff'; // Azul para asustado
+        } else if (this.currentState === this.states.EATEN) {
+            ghostColor = '#ffffff'; // Ojos para comido
+        } else {
+            // Color según tipo de fantasma
+            switch (this.color) {
+                case 'red': ghostColor = '#ff0000'; break;
+                case 'pink': ghostColor = '#ffb8de'; break;
+                case 'cyan': ghostColor = '#00ffff'; break;
+                case 'orange': ghostColor = '#ffb852'; break;
+                default: ghostColor = '#ff0000';
+            }
+        }
+        
+        // Dibujar cuerpo del fantasma (semicírculo con base ondulada)
+        ctx.fillStyle = ghostColor;
+        
+        // Cuerpo principal
+        ctx.beginPath();
+        ctx.arc(centerX, centerY - radius/4, radius, Math.PI, 0, false);
+        
+        // Base ondulada
+        const waveHeight = radius / 3;
+        const segments = 3;
+        const segmentWidth = (radius * 2) / segments;
+        
+        for (let i = 0; i < segments; i++) {
+            const startX = centerX - radius + i * segmentWidth;
+            const endX = startX + segmentWidth;
+            
+            if (i % 2 === 0) {
+                ctx.quadraticCurveTo(
+                    (startX + endX) / 2, centerY + waveHeight,
+                    endX, centerY
+                );
+            } else {
+                ctx.quadraticCurveTo(
+                    (startX + endX) / 2, centerY - waveHeight/2,
+                    endX, centerY
+                );
+            }
+        }
+        
+        ctx.fill();
+        ctx.closePath();
+        
+        // Dibujar ojos
+        const eyeSize = radius / 2;
+        const eyeY = centerY - radius/4;
+        
+        // Fondo blanco de los ojos
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(centerX - eyeSize, eyeY, eyeSize/1.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(centerX + eyeSize, eyeY, eyeSize/1.5, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Pupila - mirar en la dirección del movimiento
+        ctx.fillStyle = '#000000';
+        
+        let pupilOffsetX = 0;
+        let pupilOffsetY = 0;
+        
+        switch (this.direction) {
+            case 'ArrowUp': pupilOffsetY = -eyeSize/3; break;
+            case 'ArrowDown': pupilOffsetY = eyeSize/3; break;
+            case 'ArrowLeft': pupilOffsetX = -eyeSize/3; break;
+            case 'ArrowRight': pupilOffsetX = eyeSize/3; break;
+        }
+        
+        ctx.beginPath();
+        ctx.arc(centerX - eyeSize + pupilOffsetX, eyeY + pupilOffsetY, eyeSize/3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(centerX + eyeSize + pupilOffsetX, eyeY + pupilOffsetY, eyeSize/3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    /**
+     * Método update - Actualizar la lógica del fantasma
+     */
+    update() {
+        // Actualizar temporizador de modo asustado
+        if (this.currentState === this.states.FRIGHTENED) {
+            this.frightenedTimer--;
+            if (this.frightenedTimer <= 0) {
+                this.exitFrightenedMode();
+            }
+        }
+        
+        // Comprobar si estamos en un túnel
+        this._checkAndHandleTunnels();
+        
+        // Determinar si necesitamos elegir una nueva dirección
+        this._moveGhost();
+    }
+    
+    /**
+     * Método principal de movimiento del fantasma
+     */
+    _moveGhost() {
+        // Comprobar si necesita decidir una dirección
+        if (this._isAtCellCenter()) {
+            // Estamos centrados en una celda, es momento de decidir dirección
+            this._chooseDirection();
+        }
+        
+        // Mover en la dirección actual
+        this._applyMovement();
+    }
+
+    /**
+     * Comprobar si el fantasma está perfectamente centrado en una celda
+     */
+    _isAtCellCenter() {
+        const cellX = Math.round(this.x / this.tileSize) * this.tileSize;
+        const cellY = Math.round(this.y / this.tileSize) * this.tileSize;
+        
+        // Comprobar si estamos exactamente en el centro de una celda
+        return Math.abs(this.x - cellX) < 1 && Math.abs(this.y - cellY) < 1;
+    }
+
+    /**
+     * Seleccionar una dirección en la intersección actual
+     */
+    _chooseDirection() {
+        // Obtener la posición de cuadrícula
+        const col = Math.round(this.x / this.tileSize);
+        const row = Math.round(this.y / this.tileSize);
+        
+        // Alinear perfectamente con el centro de la celda
+        this.x = col * this.tileSize;
+        this.y = row * this.tileSize;
+        
+        // Actualizar el objetivo según el estado
+        this._updateTargetTile();
+        
+        // Obtener direcciones válidas
+        const validDirections = this._getValidDirections(row, col);
+        
+        if (validDirections.length === 0) {
+            console.log(`ERROR: Sin direcciones válidas para ${this.color} en (${col}, ${row})`);
+            // Si no hay direcciones válidas, esto no debería ocurrir, pero intentamos recuperarnos
+            this._handleEmergency(row, col);
+            return;
+        }
+        
+        // Determinar la mejor dirección según el estado
+        if (this.currentState === this.states.FRIGHTENED) {
+            // En modo asustado, dirección aleatoria (excepto hacia atrás)
+            this.direction = this._getRandomDirection(validDirections);
+        } else {
+            // En modo persecución o dispersión, elegir dirección hacia el objetivo
+            this.direction = this._getBestDirection(validDirections, row, col);
+        }
+        
+        // Log para depuración
+        console.log(`Fantasma ${this.color} cambio de dirección: ${this.direction} en (${col}, ${row})`);
+    }
+
+    /**
+     * Obtener las direcciones válidas desde una posición
+     */
+    _getValidDirections(row, col) {
+        const validDirections = [];
+        
+        // Comprobar las cuatro direcciones
+        if (this._isValidTile(row - 1, col)) validDirections.push('ArrowUp');
+        if (this._isValidTile(row + 1, col)) validDirections.push('ArrowDown');
+        if (this._isValidTile(row, col - 1)) validDirections.push('ArrowLeft');
+        if (this._isValidTile(row, col + 1)) validDirections.push('ArrowRight');
+        
+        // Si hay dirección actual, filtrar para evitar dar la vuelta
+        // (solo si hay más opciones)
+        if (this.direction && validDirections.length > 1) {
+            const oppositeDirection = this._getOppositeDirection(this.direction);
+            return validDirections.filter(dir => dir !== oppositeDirection);
+        }
+        
+        return validDirections;
+    }
+
+    /**
+     * Comprobar si una celda es válida (no es una pared)
+     */
+    _isValidTile(row, col) {
+        // Caso especial para túneles
+        if (row === 10 && (col < 0 || col >= this.map.currentMap[0].length)) {
+            return true; // El túnel siempre es válido
+        }
+        
+        // Comprobar límites del mapa
+        if (row < 0 || row >= this.map.currentMap.length || 
+            col < 0 || col >= this.map.currentMap[0].length) {
+            return false;
+        }
+        
+        // No es válido si es una pared (valor 1)
+        return this.map.currentMap[row][col] !== 1;
+    }
+
+    /**
+     * Obtener la dirección opuesta
+     */
+    _getOppositeDirection(direction) {
+        switch (direction) {
+            case 'ArrowUp': return 'ArrowDown';
+            case 'ArrowDown': return 'ArrowUp';
+            case 'ArrowLeft': return 'ArrowRight';
+            case 'ArrowRight': return 'ArrowLeft';
+            default: return null;
+        }
+    }
+
+    /**
+     * Seleccionar una dirección aleatoria entre las opciones válidas
+     */
+    _getRandomDirection(validDirections) {
+        // Simplemente elegir una dirección al azar
+        const randomIndex = Math.floor(Math.random() * validDirections.length);
+        return validDirections[randomIndex];
+    }
+
+    /**
+     * Seleccionar la mejor dirección para acercarse al objetivo
+     */
+    _getBestDirection(validDirections, row, col) {
+        if (!this.targetTile || validDirections.length === 0) {
+            return validDirections[0];
+        }
+        
+        // Calcular qué dirección nos acerca más al objetivo
+        const directionScores = {};
+        
+        for (const direction of validDirections) {
+            let newRow = row;
+            let newCol = col;
+            
+            switch (direction) {
+                case 'ArrowUp': newRow--; break;
+                case 'ArrowDown': newRow++; break;
+                case 'ArrowLeft': newCol--; break;
+                case 'ArrowRight': newCol++; break;
+            }
+            
+            // Calcular distancia Manhattan al objetivo desde esta nueva posición
+            const distance = Math.abs(newCol - this.targetTile.x) + Math.abs(newRow - this.targetTile.y);
+            directionScores[direction] = distance;
+        }
+        
+        // Ordenar direcciones por puntaje (menor distancia = mejor)
+        const sortedDirections = validDirections.sort((a, b) => {
+            return directionScores[a] - directionScores[b];
+        });
+        
+        // Devolver la dirección que más nos acerca al objetivo
+        return sortedDirections[0];
+    }
+
+    /**
+     * Aplicar el movimiento actual
+     */
+    _applyMovement() {
+        if (!this.direction) {
+            return; // Sin dirección, no nos movemos
+        }
+        
+        // Aplicar movimiento según la dirección
+        switch (this.direction) {
+            case 'ArrowUp':
+                this.y -= this.velocity;
+                break;
+            case 'ArrowDown':
+                this.y += this.velocity;
+                break;
+            case 'ArrowLeft':
+                this.x -= this.velocity;
+                break;
+            case 'ArrowRight':
+                this.x += this.velocity;
+                break;
+        }
+    }
+
+    /**
+     * Maneja situaciones de emergencia cuando el fantasma se queda atascado
+     */
+    _handleEmergency(row, col) {
+        // Buscar cualquier dirección válida ignorando la regla de "no dar la vuelta"
+        const allDirections = [];
+        if (this._isValidTile(row - 1, col)) allDirections.push('ArrowUp');
+        if (this._isValidTile(row + 1, col)) allDirections.push('ArrowDown');
+        if (this._isValidTile(row, col - 1)) allDirections.push('ArrowLeft');
+        if (this._isValidTile(row, col + 1)) allDirections.push('ArrowRight');
+        
+        if (allDirections.length > 0) {
+            // Tomar una dirección aleatoria
+            this.direction = allDirections[Math.floor(Math.random() * allDirections.length)];
+            console.log(`Emergencia: Fantasma ${this.color} forzando dirección ${this.direction}`);
+        } else {
+            // Si realmente no hay salida, teletransportar a una posición segura
+            this._emergencyTeleport();
+        }
+    }
+
+    /**
+     * Teletransporta al fantasma a una posición segura
+     */
+    _emergencyTeleport() {
+        // Posiciones seguras conocidas en el mapa
+        const safePoints = [
+            { x: 9 * this.tileSize, y: 10 * this.tileSize },  // Centro del laberinto
+            { x: 1 * this.tileSize, y: 1 * this.tileSize },   // Esquina superior izquierda
+            { x: 17 * this.tileSize, y: 1 * this.tileSize },  // Esquina superior derecha
+            { x: 9 * this.tileSize, y: 20 * this.tileSize }   // Parte inferior
+        ];
+        
+        // Elegir punto seguro basado en el color del fantasma
+        let safePoint;
+        switch (this.color) {
+            case 'red': safePoint = safePoints[0]; break;
+            case 'pink': safePoint = safePoints[1]; break;
+            case 'cyan': safePoint = safePoints[2]; break;
+            case 'orange': safePoint = safePoints[3]; break;
+            default: safePoint = safePoints[0]; break;
+        }
+        
+        // Teleportar
+        this.x = safePoint.x;
+        this.y = safePoint.y;
+        this.direction = null; // Reiniciar dirección
+        
+        console.log(`Fantasma ${this.color} teletransportado a (${safePoint.x / this.tileSize}, ${safePoint.y / this.tileSize})`);
+    }
+
+    /**
+     * Comprobar y manejar el movimiento en túneles
+     */
+    _checkAndHandleTunnels() {
+        const row = Math.round(this.y / this.tileSize);
+        const col = Math.round(this.x / this.tileSize);
+        
+        // Solo comprobar en la fila del túnel (fila 10)
+        if (row !== 10) {
+            this.inTunnel = false;
+            return;
+        }
+        
+        // Verificar si estamos en los límites del túnel
+        const mapWidth = this.map.currentMap[0].length * this.tileSize;
+        
+        if (this.x < -this.tileSize) {
+            // Túnel izquierdo -> derecho
+            this.x = mapWidth;
+            this.inTunnel = true;
+            this.direction = 'ArrowLeft'; // Mantener dirección correcta
+        } else if (this.x > mapWidth) {
+            // Túnel derecho -> izquierdo
+            this.x = -this.tileSize;
+            this.inTunnel = true;
+            this.direction = 'ArrowRight'; // Mantener dirección correcta
+        } else if (col < 0 || col >= this.map.currentMap[0].length) {
+            // Estamos dentro del túnel pero no en los extremos
+            this.inTunnel = true;
+        } else {
+            this.inTunnel = false;
+        }
+    }
+
+    /**
+     * Actualizar el objetivo según el estado actual y tipo de fantasma
+     */
+    _updateTargetTile() {
+        // Si estamos en modo comido, siempre volver a la caja central
+        if (this.currentState === this.states.EATEN) {
+            this.targetTile = { x: 9, y: 10 }; // Centro del mapa
+            return;
+        }
+        
+        // Si estamos en modo asustado, no importa el objetivo 
+        // (se mueve aleatoriamente)
+        if (this.currentState === this.states.FRIGHTENED) {
+            return;
+        }
+        
+        // Modo dispersión: ir a la esquina asignada
+        if (this.currentState === this.states.SCATTER) {
+            this.targetTile = { x: this.scatterTarget.x, y: this.scatterTarget.y };
+            return;
+        }
+        
+        // Modo persecución: lógica específica según el fantasma
+        if (this.player) {
+            const playerRow = Math.floor(this.player.y / this.tileSize);
+            const playerCol = Math.floor(this.player.x / this.tileSize);
+            
+            // Dirección actual del jugador
+            const playerDir = this.player.currentDirection || this.player.direction;
+            
+            switch (this.color) {
+                case 'red':
+                    // Blinky: Persigue directamente a Pac-Man
+                    this.targetTile = { x: playerCol, y: playerRow };
+                    break;
+                    
+                case 'pink':
+                    // Pinky: Apunta 4 casillas delante de Pac-Man
+                    let targetX = playerCol;
+                    let targetY = playerRow;
+                    
+                    // Calcular posición objetivo según dirección del jugador
+                    switch (playerDir) {
+                        case 'ArrowUp':
+                            targetY = Math.max(0, playerRow - 4);
+                            // "Pacman bug" - en el juego original, hacia arriba también se desplaza 4 a la izquierda
+                            targetX = Math.max(0, playerCol - 4);
+                            break;
+                        case 'ArrowDown':
+                            targetY = Math.min(this.map.currentMap.length - 1, playerRow + 4);
+                            break;
+                        case 'ArrowLeft':
+                            targetX = Math.max(0, playerCol - 4);
+                            break;
+                        case 'ArrowRight':
+                            targetX = Math.min(this.map.currentMap[0].length - 1, playerCol + 4);
+                            break;
+                    }
+                    
+                    this.targetTile = { x: targetX, y: targetY };
+                    break;
+                    
+                case 'cyan':
+                    // Inky: Vector entre Blinky y un punto 2 casillas delante de Pac-Man
+                    let intermediateX = playerCol;
+                    let intermediateY = playerRow;
+                    
+                    // Punto 2 casillas delante de Pac-Man
+                    switch (playerDir) {
+                        case 'ArrowUp':
+                            intermediateY = Math.max(0, playerRow - 2);
+                            break;
+                        case 'ArrowDown':
+                            intermediateY = Math.min(this.map.currentMap.length - 1, playerRow + 2);
+                            break;
+                        case 'ArrowLeft':
+                            intermediateX = Math.max(0, playerCol - 2);
+                            break;
+                        case 'ArrowRight':
+                            intermediateX = Math.min(this.map.currentMap[0].length - 1, playerCol + 2);
+                            break;
+                    }
+                    
+                    // Necesitamos la posición de Blinky (fantasma rojo)
+                    // Por simplificación, si no tenemos referencia, usamos un punto fijo
+                    let blinkyRow = 10;
+                    let blinkyCol = 10;
+                    
+                    // Vector desde Blinky al punto intermedio, duplicado
+                    const vectorX = (intermediateX - blinkyCol) * 2;
+                    const vectorY = (intermediateY - blinkyRow) * 2;
+                    
+                    // Punto objetivo
+                    const targetXInky = blinkyCol + vectorX;
+                    const targetYInky = blinkyRow + vectorY;
+                    
+                    this.targetTile = { 
+                        x: Math.max(0, Math.min(this.map.currentMap[0].length - 1, targetXInky)),
+                        y: Math.max(0, Math.min(this.map.currentMap.length - 1, targetYInky))
+                    };
+                    break;
+                    
+                case 'orange':
+                    // Clyde: Si está cerca (8 casillas), va a su esquina, si no, persigue
+                    const distToPlayer = Math.sqrt(
+                        Math.pow(playerCol - Math.floor(this.x / this.tileSize), 2) + 
+                        Math.pow(playerRow - Math.floor(this.y / this.tileSize), 2)
+                    );
+                    
+                    if (distToPlayer < 8) {
+                        // Si está cerca, huye a su esquina
+                        this.targetTile = { x: this.scatterTarget.x, y: this.scatterTarget.y };
+                    } else {
+                        // Si está lejos, persigue como Blinky
+                        this.targetTile = { x: playerCol, y: playerRow };
+                    }
+                    break;
+                    
+                default:
+                    // Por defecto, perseguir directamente
+                    this.targetTile = { x: playerCol, y: playerRow };
+                    break;
+            }
+        } else {
+            // Si no hay referencia al jugador, usar esquina de dispersión
+            this.targetTile = { x: this.scatterTarget.x, y: this.scatterTarget.y };
+        }
+    }
+
+    /**
+     * Comprobar si el fantasma colisiona con Pac-Man
+     * @param {Player} player - El jugador (Pac-Man)
+     * @returns {boolean} - true si hay colisión
+     */
+    checkCollision(player) {
+        // Calcular centros
+        const ghostCenterX = this.x + this.tileSize / 2;
+        const ghostCenterY = this.y + this.tileSize / 2;
+        const playerCenterX = player.x + this.tileSize / 2;
+        const playerCenterY = player.y + this.tileSize / 2;
+        
+        // Calcular distancia entre centros
+        const distance = Math.sqrt(
+            Math.pow(ghostCenterX - playerCenterX, 2) + 
+            Math.pow(ghostCenterY - playerCenterY, 2)
+        );
+        
+        // Hay colisión si la distancia es menor que la suma de los radios
+        const collisionThreshold = this.tileSize * 0.7;
+        return distance < collisionThreshold;
+    }
+
+    /**
+     * Activar el modo asustado (cuando Pac-Man come una píldora de poder)
+     */
+    setFrightened() {
+        // Si ya está comido, no cambiar el estado
+        if (this.currentState === this.states.EATEN) {
+            return;
+        }
+        
+        // Guardar el estado anterior solo si no estamos ya asustados
+        if (this.currentState !== this.states.FRIGHTENED) {
+            this.previousState = this.currentState;
+        }
+        
+        this.currentState = this.states.FRIGHTENED;
+        this.frightenedTimer = this.frightenedDuration;
+        
+        // Dar la vuelta
+        if (this.direction) {
+            this.direction = this._getOppositeDirection(this.direction);
+        }
+        
+        console.log(`Fantasma ${this.color} entró en modo asustado`);
+    }
+
+    /**
+     * Salir del modo asustado
+     */
+    exitFrightenedMode() {
+        if (this.currentState === this.states.FRIGHTENED) {
+            this.currentState = this.previousState || this.states.SCATTER;
+            console.log(`Fantasma ${this.color} ha salido del modo asustado`);
+        }
+    }
+
+    /**
+     * Cambiar entre modos Chase y Scatter
+     */
+    toggleChaseScatter(chaseMode) {
+        // Solo cambiar si no estamos en modo asustado o comido
+        if (this.currentState !== this.states.FRIGHTENED && this.currentState !== this.states.EATEN) {
+            this.currentState = chaseMode ? this.states.CHASE : this.states.SCATTER;
+        }
+    }
+
+    /**
+     * Método llamado cuando el fantasma es comido por Pac-Man
+     */
+    getEaten() {
+        this.currentState = this.states.EATEN;
+        console.log(`Fantasma ${this.color} fue comido!`);
+    }
+
+    /**
+     * Método para resetear la posición del fantasma
+     */
+    resetPosition() {
+        this.x = this.initialX;
+        this.y = this.initialY;
+        this.direction = null;
+        
+        // Si estaba en modo comido, volver al estado anterior
+        if (this.currentState === this.states.EATEN) {
+            this.currentState = this.previousState || this.states.SCATTER;
+        }
+        
+        console.log(`Fantasma ${this.color} reseteado a posición inicial (${Math.round(this.initialX/this.tileSize)}, ${Math.round(this.initialY/this.tileSize)})`);
+    }
+
+    /**
+     * Devuelve la posición actual en formato de celda
+     * @returns {object} - Objeto con las propiedades row y col
+     */
+    getCurrentCell() {
+        return {
+            row: Math.round(this.y / this.tileSize),
+            col: Math.round(this.x / this.tileSize)
+        };
+    }
+
+    /**
+     * Método para devolver el fantasma a casa tras ser comido
+     */
+    returnHome() {
+        // Verificar si hemos llegado a casa
+        const currentCell = this.getCurrentCell();
+        const homeCell = {
+            row: Math.round(this.initialY / this.tileSize),
+            col: Math.round(this.initialX / this.tileSize)
+        };
+        
+        const distanceToHome = Math.abs(currentCell.row - homeCell.row) + 
+                              Math.abs(currentCell.col - homeCell.col);
+        
+        if (distanceToHome < 2) {
+            // Si estamos en casa o muy cerca
+            this.resetPosition();
+            return true; // Hemos llegado a casa
+        }
+        
+        return false; // Aún no hemos llegado a casa
+    }
+}
